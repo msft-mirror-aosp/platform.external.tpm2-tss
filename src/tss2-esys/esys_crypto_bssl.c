@@ -8,16 +8,24 @@
 #include <config.h>
 #endif
 
+#include <openssl/bn.h>
+#include <openssl/cipher.h>
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 #include <openssl/aes.h>
+#include <openssl/rand.h>
 #include <openssl/rsa.h>
 #include <openssl/engine.h>
+#include <openssl/mem.h>
+#include <openssl/ec.h>
+#include <openssl/ec_key.h>
 #include <stdio.h>
 
 #include "tss2_esys.h"
 
 #include "esys_crypto.h"
-#include "esys_crypto_ossl.h"
+#include "esys_crypto_bssl.h"
 
 #include "esys_iutil.h"
 #include "esys_mu.h"
@@ -48,7 +56,7 @@ typedef struct _IESYS_CRYPTO_CONTEXT {
             size_t hash_len;
         } hash; /**< the state variables for a hash context */
         struct {
-            EVP_MD_CTX *ossl_context;
+            HMAC_CTX *ossl_context;
             const EVP_MD *ossl_hash_alg;
             size_t hmac_len;
         } hmac; /**< the state variables for an hmac context */
@@ -56,7 +64,7 @@ typedef struct _IESYS_CRYPTO_CONTEXT {
 } IESYS_CRYPTOSSL_CONTEXT;
 
 const EVP_MD *
-get_ossl_hash_md(TPM2_ALG_ID hashAlg)
+get_bssl_hash_md(TPM2_ALG_ID hashAlg)
 {
     switch (hashAlg) {
     case TPM2_ALG_SHA1:
@@ -87,7 +95,7 @@ get_ossl_hash_md(TPM2_ALG_ID hashAlg)
  * @retval TSS2_ESYS_RC_GENERAL_FAILURE for errors of the crypto library.
  */
 TSS2_RC
-iesys_cryptossl_hash_start(IESYS_CRYPTO_CONTEXT_BLOB ** context,
+iesys_cryptbssl_hash_start(IESYS_CRYPTO_CONTEXT_BLOB ** context,
                            TPM2_ALG_ID hashAlg)
 {
     TSS2_RC r = TSS2_RC_SUCCESS;
@@ -99,7 +107,7 @@ iesys_cryptossl_hash_start(IESYS_CRYPTO_CONTEXT_BLOB ** context,
     return_if_null(mycontext, "Out of Memory", TSS2_ESYS_RC_MEMORY);
     mycontext->type = IESYS_CRYPTOSSL_TYPE_HASH;
 
-    if (!(mycontext->hash.ossl_hash_alg = get_ossl_hash_md(hashAlg))) {
+    if (!(mycontext->hash.ossl_hash_alg = get_bssl_hash_md(hashAlg))) {
         goto_error(r, TSS2_ESYS_RC_NOT_IMPLEMENTED,
                    "Unsupported hash algorithm (%"PRIu16")", cleanup, hashAlg);
     }
@@ -142,7 +150,7 @@ iesys_cryptossl_hash_start(IESYS_CRYPTO_CONTEXT_BLOB ** context,
  * @retval TSS2_ESYS_RC_BAD_REFERENCE for invalid parameters.
  */
 TSS2_RC
-iesys_cryptossl_hash_update(IESYS_CRYPTO_CONTEXT_BLOB * context,
+iesys_cryptbssl_hash_update(IESYS_CRYPTO_CONTEXT_BLOB * context,
                             const uint8_t * buffer, size_t size)
 {
     LOG_TRACE("called for context %p, buffer %p and size %zd", context, buffer,
@@ -176,14 +184,14 @@ iesys_cryptossl_hash_update(IESYS_CRYPTO_CONTEXT_BLOB * context,
  * @retval TSS2_ESYS_RC_BAD_REFERENCE for invalid parameters.
  */
 TSS2_RC
-iesys_cryptossl_hash_update2b(IESYS_CRYPTO_CONTEXT_BLOB * context, TPM2B * b)
+iesys_cryptbssl_hash_update2b(IESYS_CRYPTO_CONTEXT_BLOB * context, TPM2B * b)
 {
     LOG_TRACE("called for context-pointer %p and 2b-pointer %p", context, b);
     if (context == NULL || b == NULL) {
         LOG_ERROR("Null-Pointer passed");
         return TSS2_ESYS_RC_BAD_REFERENCE;
     }
-    TSS2_RC ret = iesys_cryptossl_hash_update(context, &b->buffer[0], b->size);
+    TSS2_RC ret = iesys_cryptbssl_hash_update(context, &b->buffer[0], b->size);
     return ret;
 }
 
@@ -199,7 +207,7 @@ iesys_cryptossl_hash_update2b(IESYS_CRYPTO_CONTEXT_BLOB * context, TPM2B * b)
  * @retval TSS2_ESYS_RC_GENERAL_FAILURE for errors of the crypto library.
  */
 TSS2_RC
-iesys_cryptossl_hash_finish(IESYS_CRYPTO_CONTEXT_BLOB ** context,
+iesys_cryptbssl_hash_finish(IESYS_CRYPTO_CONTEXT_BLOB ** context,
                             uint8_t * buffer, size_t * size)
 {
     unsigned int digest_size = 0;
@@ -243,7 +251,7 @@ iesys_cryptossl_hash_finish(IESYS_CRYPTO_CONTEXT_BLOB ** context,
  * @param[in,out] context The context of the digest object.
  */
 void
-iesys_cryptossl_hash_abort(IESYS_CRYPTO_CONTEXT_BLOB ** context)
+iesys_cryptbssl_hash_abort(IESYS_CRYPTO_CONTEXT_BLOB ** context)
 {
     LOG_TRACE("called for context-pointer %p", context);
     if (context == NULL || *context == NULL) {
@@ -278,12 +286,11 @@ iesys_cryptossl_hash_abort(IESYS_CRYPTO_CONTEXT_BLOB ** context)
  * @retval TSS2_ESYS_RC_GENERAL_FAILURE for errors of the crypto library.
  */
 TSS2_RC
-iesys_cryptossl_hmac_start(IESYS_CRYPTO_CONTEXT_BLOB ** context,
+iesys_cryptbssl_hmac_start(IESYS_CRYPTO_CONTEXT_BLOB ** context,
                            TPM2_ALG_ID hashAlg,
                            const uint8_t * key, size_t size)
 {
     TSS2_RC r = TSS2_RC_SUCCESS;
-    EVP_PKEY *hkey = NULL;
 
     LOG_TRACE("called for context-pointer %p and hmacAlg %d", context, hashAlg);
     LOGBLOB_TRACE(key, size, "Starting  hmac with");
@@ -294,7 +301,7 @@ iesys_cryptossl_hmac_start(IESYS_CRYPTO_CONTEXT_BLOB ** context,
     IESYS_CRYPTOSSL_CONTEXT *mycontext = calloc(1, sizeof(IESYS_CRYPTOSSL_CONTEXT));
     return_if_null(mycontext, "Out of Memory", TSS2_ESYS_RC_MEMORY);
 
-    if (!(mycontext->hmac.ossl_hash_alg = get_ossl_hash_md(hashAlg))) {
+    if (!(mycontext->hmac.ossl_hash_alg = get_bssl_hash_md(hashAlg))) {
         goto_error(r, TSS2_ESYS_RC_NOT_IMPLEMENTED,
                    "Unsupported hash algorithm (%"PRIu16")", cleanup, hashAlg);
     }
@@ -304,35 +311,26 @@ iesys_cryptossl_hmac_start(IESYS_CRYPTO_CONTEXT_BLOB ** context,
                    "Unsupported hash algorithm (%"PRIu16")", cleanup, hashAlg);
     }
 
-    if (!(mycontext->hmac.ossl_context =  EVP_MD_CTX_create())) {
+    if (!(mycontext->hmac.ossl_context = HMAC_CTX_new())) {
         goto_error(r, TSS2_ESYS_RC_GENERAL_FAILURE,
-                   "Error EVP_MD_CTX_create", cleanup);
+                   "Error HMAC_CTX_new", cleanup);
     }
 
-    if (!(hkey = EVP_PKEY_new_mac_key(EVP_PKEY_HMAC, NULL, key, size))) {
+    if (1 != HMAC_Init_ex(mycontext->hmac.ossl_context, key, size,
+                          mycontext->hmac.ossl_hash_alg, NULL)) {
         goto_error(r, TSS2_ESYS_RC_GENERAL_FAILURE,
-                   "EVP_PKEY_new_mac_key", cleanup);
-    }
-
-    if(1 != EVP_DigestSignInit(mycontext->hmac.ossl_context, NULL,
-                               mycontext->hmac.ossl_hash_alg, NULL, hkey)) {
-        goto_error(r, TSS2_ESYS_RC_GENERAL_FAILURE,
-                   "DigestSignInit", cleanup);
+                   "HMAC_Init_ex", cleanup);
     }
 
     mycontext->type = IESYS_CRYPTOSSL_TYPE_HMAC;
 
     *context = (IESYS_CRYPTO_CONTEXT_BLOB *) mycontext;
 
-    EVP_PKEY_free(hkey);
-
     return TSS2_RC_SUCCESS;
 
  cleanup:
     if (mycontext->hmac.ossl_context)
-        EVP_MD_CTX_destroy(mycontext->hmac.ossl_context);
-    if(hkey)
-        EVP_PKEY_free(hkey);
+        HMAC_CTX_free(mycontext->hmac.ossl_context);
     SAFE_FREE(mycontext);
     return r;
 }
@@ -348,7 +346,7 @@ iesys_cryptossl_hmac_start(IESYS_CRYPTO_CONTEXT_BLOB ** context,
  * @retval TSS2_ESYS_RC_BAD_REFERENCE for invalid parameters.
  */
 TSS2_RC
-iesys_cryptossl_hmac_update(IESYS_CRYPTO_CONTEXT_BLOB * context,
+iesys_cryptbssl_hmac_update(IESYS_CRYPTO_CONTEXT_BLOB * context,
                             const uint8_t * buffer, size_t size)
 {
     LOG_TRACE("called for context %p, buffer %p and size %zd",
@@ -364,7 +362,7 @@ iesys_cryptossl_hmac_update(IESYS_CRYPTO_CONTEXT_BLOB * context,
     LOGBLOB_TRACE(buffer, size, "Updating hmac with");
 
     /* Call update with the message */
-    if(1 != EVP_DigestSignUpdate(mycontext->hmac.ossl_context, buffer, size)) {
+    if(1 != HMAC_Update(mycontext->hmac.ossl_context, buffer, size)) {
         return_error(TSS2_ESYS_RC_GENERAL_FAILURE, "OSSL HMAC update");
     }
 
@@ -381,13 +379,13 @@ iesys_cryptossl_hmac_update(IESYS_CRYPTO_CONTEXT_BLOB * context,
  * @retval TSS2_ESYS_RC_BAD_REFERENCE for invalid parameters.
  */
 TSS2_RC
-iesys_cryptossl_hmac_update2b(IESYS_CRYPTO_CONTEXT_BLOB * context, TPM2B * b)
+iesys_cryptbssl_hmac_update2b(IESYS_CRYPTO_CONTEXT_BLOB * context, TPM2B * b)
 {
     LOG_TRACE("called for context-pointer %p and 2b-pointer %p", context, b);
     if (context == NULL || b == NULL) {
         return_error(TSS2_ESYS_RC_BAD_REFERENCE, "Null-Pointer passed");
     }
-    TSS2_RC ret = iesys_cryptossl_hmac_update(context, &b->buffer[0], b->size);
+    TSS2_RC ret = iesys_cryptbssl_hmac_update(context, &b->buffer[0], b->size);
     return ret;
 }
 
@@ -404,10 +402,10 @@ iesys_cryptossl_hmac_update2b(IESYS_CRYPTO_CONTEXT_BLOB * context, TPM2B * b)
  * @retval TSS2_ESYS_RC_GENERAL_FAILURE for errors of the crypto library.
  */
 TSS2_RC
-iesys_cryptossl_hmac_finish(IESYS_CRYPTO_CONTEXT_BLOB ** context,
+iesys_cryptbssl_hmac_finish(IESYS_CRYPTO_CONTEXT_BLOB ** context,
                             uint8_t * buffer, size_t * size)
 {
-
+    unsigned int out_len;
     TSS2_RC r = TSS2_RC_SUCCESS;
 
     LOG_TRACE("called for context-pointer %p, buffer %p and size-pointer %p",
@@ -425,14 +423,15 @@ iesys_cryptossl_hmac_finish(IESYS_CRYPTO_CONTEXT_BLOB ** context,
         return_error(TSS2_ESYS_RC_BAD_SIZE, "Buffer too small");
     }
 
-    if (1 != EVP_DigestSignFinal(mycontext->hmac.ossl_context, buffer, size)) {
+    if (1 != HMAC_Final(mycontext->hmac.ossl_context, buffer, &out_len)) {
         goto_error(r, TSS2_ESYS_RC_GENERAL_FAILURE, "DigestSignFinal", cleanup);
     }
+    *size = out_len;
 
     LOGBLOB_TRACE(buffer, *size, "read hmac result");
 
  cleanup:
-    EVP_MD_CTX_destroy(mycontext->hmac.ossl_context);
+    HMAC_CTX_free(mycontext->hmac.ossl_context);
     SAFE_FREE(mycontext);
     *context = NULL;
     return r;
@@ -450,14 +449,14 @@ iesys_cryptossl_hmac_finish(IESYS_CRYPTO_CONTEXT_BLOB ** context,
  * @retval TSS2_ESYS_RC_GENERAL_FAILURE for errors of the crypto library.
  */
 TSS2_RC
-iesys_cryptossl_hmac_finish2b(IESYS_CRYPTO_CONTEXT_BLOB ** context, TPM2B * hmac)
+iesys_cryptbssl_hmac_finish2b(IESYS_CRYPTO_CONTEXT_BLOB ** context, TPM2B * hmac)
 {
     LOG_TRACE("called for context-pointer %p and 2b-pointer %p", context, hmac);
     if (context == NULL || *context == NULL || hmac == NULL) {
         return_error(TSS2_ESYS_RC_BAD_REFERENCE, "Null-Pointer passed");
     }
     size_t s = hmac->size;
-    TSS2_RC ret = iesys_cryptossl_hmac_finish(context, &hmac->buffer[0], &s);
+    TSS2_RC ret = iesys_cryptbssl_hmac_finish(context, &hmac->buffer[0], &s);
     hmac->size = s;
     return ret;
 }
@@ -468,7 +467,7 @@ iesys_cryptossl_hmac_finish2b(IESYS_CRYPTO_CONTEXT_BLOB ** context, TPM2B * hmac
  * @param[in,out] context The context of the HMAC object.
  */
 void
-iesys_cryptossl_hmac_abort(IESYS_CRYPTO_CONTEXT_BLOB ** context)
+iesys_cryptbssl_hmac_abort(IESYS_CRYPTO_CONTEXT_BLOB ** context)
 {
     LOG_TRACE("called for context-pointer %p", context);
     if (context == NULL || *context == NULL) {
@@ -483,7 +482,7 @@ iesys_cryptossl_hmac_abort(IESYS_CRYPTO_CONTEXT_BLOB ** context)
             return;
         }
 
-        EVP_MD_CTX_destroy(mycontext->hmac.ossl_context);
+        HMAC_CTX_free(mycontext->hmac.ossl_context);
 
         free(mycontext);
         *context = NULL;
@@ -500,7 +499,7 @@ iesys_cryptossl_hmac_abort(IESYS_CRYPTO_CONTEXT_BLOB ** context)
  * NOTE: the TPM should not be used to obtain the random data
  */
 TSS2_RC
-iesys_cryptossl_random2b(TPM2B_NONCE * nonce, size_t num_bytes)
+iesys_cryptbssl_random2b(TPM2B_NONCE * nonce, size_t num_bytes)
 {
     const RAND_METHOD *rand_save = RAND_get_rand_method();
 
@@ -510,11 +509,6 @@ iesys_cryptossl_random2b(TPM2B_NONCE * nonce, size_t num_bytes)
         nonce->size = num_bytes;
     }
 
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L
-    RAND_set_rand_method(RAND_OpenSSL());
-#else
-    RAND_set_rand_method(RAND_SSLeay());
-#endif
     if (1 != RAND_bytes(&nonce->buffer[0], nonce->size)) {
         RAND_set_rand_method(rand_save);
         return_error(TSS2_ESYS_RC_GENERAL_FAILURE,
@@ -540,7 +534,7 @@ iesys_cryptossl_random2b(TPM2B_NONCE * nonce, size_t num_bytes)
  * @retval TSS2_ESYS_RC_GENERAL_FAILURE The internal crypto engine failed.
  */
 TSS2_RC
-iesys_cryptossl_pk_encrypt(TPM2B_PUBLIC * pub_tpm_key,
+iesys_cryptbssl_pk_encrypt(TPM2B_PUBLIC * pub_tpm_key,
                            size_t in_size,
                            BYTE * in_buffer,
                            size_t max_out_size,
@@ -548,11 +542,6 @@ iesys_cryptossl_pk_encrypt(TPM2B_PUBLIC * pub_tpm_key,
                            size_t * out_size, const char *label)
 {
     const RAND_METHOD *rand_save = RAND_get_rand_method();
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L
-    RAND_set_rand_method(RAND_OpenSSL());
-#else
-    RAND_set_rand_method(RAND_SSLeay());
-#endif
 
     TSS2_RC r = TSS2_RC_SUCCESS;
     const EVP_MD * hashAlg = NULL;
@@ -563,7 +552,7 @@ iesys_cryptossl_pk_encrypt(TPM2B_PUBLIC * pub_tpm_key,
     int padding;
     char *label_copy = NULL;
 
-    if (!(hashAlg = get_ossl_hash_md(pub_tpm_key->publicArea.nameAlg))) {
+    if (!(hashAlg = get_bssl_hash_md(pub_tpm_key->publicArea.nameAlg))) {
         LOG_ERROR("Unsupported hash algorithm (%"PRIu16")",
                   pub_tpm_key->publicArea.nameAlg);
         RAND_set_rand_method(rand_save);
@@ -663,7 +652,7 @@ iesys_cryptossl_pk_encrypt(TPM2B_PUBLIC * pub_tpm_key,
                    "Could not duplicate OAEP label", cleanup);
     }
 
-    if (1 != EVP_PKEY_CTX_set0_rsa_oaep_label(ctx, label_copy, strlen(label_copy)+1)) {
+    if (1 != EVP_PKEY_CTX_set0_rsa_oaep_label(ctx, (unsigned char*) label_copy, strlen(label_copy)+1)) {
         OPENSSL_free(label_copy);
         goto_error(r, TSS2_ESYS_RC_GENERAL_FAILURE,
                    "Could not set RSA label.", cleanup);
@@ -777,7 +766,7 @@ tpm_pub_to_ossl_pub(EC_GROUP *group, TPM2B_PUBLIC *key, EC_POINT **tpm_pub_key)
  * @retval TSS2_ESYS_RC_GENERAL_FAILURE The internal crypto engine failed.
  */
 TSS2_RC
-iesys_cryptossl_get_ecdh_point(TPM2B_PUBLIC *key,
+iesys_cryptbssl_get_ecdh_point(TPM2B_PUBLIC *key,
                                size_t max_out_size,
                                TPM2B_ECC_PARAMETER *Z,
                                TPMS_ECC_POINT *Q,
@@ -944,7 +933,7 @@ iesys_cryptossl_get_ecdh_point(TPM2B_PUBLIC *key,
  * @retval TSS2_ESYS_RC_GENERAL_FAILURE for errors of the crypto library.
  */
 TSS2_RC
-iesys_cryptossl_sym_aes_encrypt(uint8_t * key,
+iesys_cryptbssl_sym_aes_encrypt(uint8_t * key,
                                 TPM2_ALG_ID tpm_sym_alg,
                                 TPMI_AES_KEY_BITS key_bits,
                                 TPM2_ALG_ID tpm_mode,
@@ -967,17 +956,14 @@ iesys_cryptossl_sym_aes_encrypt(uint8_t * key,
     /* Parameter blk_len needed for other crypto libraries */
     (void)blk_len;
 
-    if (key_bits == 128 && tpm_mode == TPM2_ALG_CFB)
-        cipher_alg = EVP_aes_128_cfb();
-    else if (key_bits == 192 && tpm_mode == TPM2_ALG_CFB)
-        cipher_alg = EVP_aes_192_cfb();
-    else if (key_bits == 256 && tpm_mode == TPM2_ALG_CFB)
-        cipher_alg = EVP_aes_256_cfb();
-    else {
-        goto_error(r, TSS2_ESYS_RC_BAD_VALUE,
-                   "AES algorithm not implemented or illegal mode (CFB expected).",
-                   cleanup);
-    }
+    // This would use EVP_aes_128_cfb128 and EVP_aes_256_cfb128, but they are in
+    // BoringSSL decrepit only.
+    (void)key_bits;
+    (void)tpm_mode;
+
+    goto_error(r, TSS2_ESYS_RC_BAD_VALUE,
+               "AES algorithm not implemented or illegal mode (CFB expected).",
+               cleanup);
 
     if (tpm_sym_alg != TPM2_ALG_AES) {
         goto_error(r, TSS2_ESYS_RC_BAD_VALUE,
@@ -1032,7 +1018,7 @@ iesys_cryptossl_sym_aes_encrypt(uint8_t * key,
  * @retval TSS2_ESYS_RC_GENERAL_FAILURE for errors of the crypto library.
  */
 TSS2_RC
-iesys_cryptossl_sym_aes_decrypt(uint8_t * key,
+iesys_cryptbssl_sym_aes_decrypt(uint8_t * key,
                                 TPM2_ALG_ID tpm_sym_alg,
                                 TPMI_AES_KEY_BITS key_bits,
                                 TPM2_ALG_ID tpm_mode,
@@ -1058,17 +1044,13 @@ iesys_cryptossl_sym_aes_decrypt(uint8_t * key,
                    "AES encrypt called with wrong algorithm.", cleanup);
     }
 
-    if (key_bits == 128 && tpm_mode == TPM2_ALG_CFB)
-        cipher_alg = EVP_aes_128_cfb();
-    else if (key_bits == 192 && tpm_mode == TPM2_ALG_CFB)
-        cipher_alg = EVP_aes_192_cfb();
-    else if (key_bits == 256 && tpm_mode == TPM2_ALG_CFB)
-        cipher_alg = EVP_aes_256_cfb();
-    else {
+    // This would use EVP_aes_128_cfb128 and EVP_aes_256_cfb128, but they are in
+    // BoringSSL decrepit only.
+    (void)key_bits;
+    (void)tpm_mode;
 
-        goto_error(r, TSS2_ESYS_RC_NOT_IMPLEMENTED,
-                   "AES algorithm not implemented.", cleanup);
-    }
+    goto_error(r, TSS2_ESYS_RC_NOT_IMPLEMENTED,
+               "AES algorithm not implemented.", cleanup);
 
     /* Create and initialize the context */
     if(!(ctx = EVP_CIPHER_CTX_new())) {
@@ -1113,7 +1095,7 @@ iesys_cryptossl_sym_aes_decrypt(uint8_t * key,
  * a return code.
  */
 TSS2_RC
-iesys_cryptossl_init() {
+iesys_cryptbssl_init() {
     ENGINE_load_builtin_engines();
     OpenSSL_add_all_algorithms();
     return TSS2_RC_SUCCESS;
