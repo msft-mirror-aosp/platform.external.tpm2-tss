@@ -16,6 +16,35 @@ cc_defaults {
     name: "tpm2-tss-defaults",
     cflags: [
         "-DMAXLOGLEVEL=6",
+        "-DBSSL", // Use OpenSSL (BoringSSL) encryption instead of gcrypt
+    ],
+    vendor: true,
+}
+
+cc_library {
+    name: "tpm2-tss2-esys",
+    defaults: [ "tpm2-tss-defaults" ],
+    srcs: [
+        "src/tss2-esys/api/*.c",
+        "src/tss2-esys/esys_context.c",
+        "src/tss2-esys/esys_crypto.c",
+        "src/tss2-esys/esys_crypto_bssl.c",
+        "src/tss2-esys/esys_free.c",
+        "src/tss2-esys/esys_iutil.c",
+        "src/tss2-esys/esys_mu.c",
+        "src/tss2-esys/esys_tr.c",
+    ],
+    local_include_dirs: [
+        "include/tss2",
+        "src",
+        "src/tss2-esys",
+    ],
+    shared_libs: [
+        "libcrypto",
+        "tpm2-tss2-mu",
+        "tpm2-tss2-tcti",
+        "tpm2-tss2-sys",
+        "tpm2-tss2-util",
     ],
     vendor: true,
 }
