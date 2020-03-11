@@ -19,6 +19,9 @@ cc_defaults {
         "-DBSSL", // Use OpenSSL (BoringSSL) encryption instead of gcrypt
     ],
     vendor: true,
+    export_include_dirs: [
+        "include",
+    ],
 }
 
 cc_library {
