@@ -151,6 +151,10 @@ static log_level LOGMODULE_status COMPILER_ATTR(unused) = LOGLEVEL_UNDEFINED;
 #define LOGBLOB_TRACE(FORMAT, ...) {}
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void
 doLog(log_level loglevel, const char *module, log_level logdefault,
        log_level *status,
@@ -164,5 +168,9 @@ doLogBlob(log_level loglevel, const char *module, log_level logdefault,
           const char *file, const char *func, int line,
           const uint8_t *buffer, size_t size, const char *msg, ...)
     COMPILER_ATTR(unused, format (printf, 10, 11));
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
 
 #endif /* LOG_H */
