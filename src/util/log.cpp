@@ -11,6 +11,8 @@
 #define LOGMODULE log
 #include "log.h"
 
+#include <android-base/logging.h>
+
 #if !defined(_MSC_VER) || defined(__INTEL_COMPILER)
 #define likely(x)       __builtin_expect(!!(x), 1)
 #define unlikely(x)     __builtin_expect(!!(x), 0)
@@ -19,6 +21,8 @@
 #define likely(x)       (x)
 #define unlikely(x)     (x)
 #endif
+
+extern "C" {
 
 /**
  * Compares two strings byte by byte and ignores the
@@ -159,25 +163,55 @@ doLog(log_level loglevel, const char *module, log_level logdefault,
     if (loglevel > *status)
         return;
 
-    int size = snprintf(NULL, 0, "%s:%s:%s:%d:%s() %s \n",
+    int size = snprintf(NULL, 0, "%s:%s:%s:%d:%s() %s ",
                 log_strings[loglevel], module, file, line, func, msg);
     char fmt[size+1];
-    snprintf(fmt, sizeof(fmt), "%s:%s:%s:%d:%s() %s \n",
+    snprintf(fmt, sizeof(fmt), "%s:%s:%s:%d:%s() %s ",
                 log_strings[loglevel], module, file, line, func, msg);
 
     va_list vaargs;
     va_start(vaargs, msg);
-    vfprintf (stderr, fmt,
-        /* log_strings[loglevel], module, file, func, line, */
-        vaargs);
+    int complete_size = vsnprintf(NULL, 0, fmt, vaargs);
     va_end(vaargs);
+
+    va_start(vaargs, msg);
+    char complete[complete_size+1];
+    vsnprintf(complete, sizeof(complete), fmt, vaargs);
+    va_end(vaargs);
+
+    fprintf(stderr, "%s\n", complete);
+
+    switch (loglevel) {
+      case LOGLEVEL_NONE:
+        LOG(ERROR) << complete;
+        break;
+      case LOGLEVEL_ERROR:
+        LOG(ERROR) << complete;
+        break;
+      case LOGLEVEL_WARNING:
+        LOG(WARNING) << complete;
+        break;
+      case LOGLEVEL_INFO:
+        LOG(INFO) << complete;
+        break;
+      case LOGLEVEL_DEBUG:
+        LOG(DEBUG) << complete;
+        break;
+      case LOGLEVEL_TRACE:
+        LOG(VERBOSE) << complete;
+        break;
+      case LOGLEVEL_UNDEFINED:
+      default:
+        LOG(WARNING) << complete;
+        break;
+    }
 }
 
 static log_level
 log_stringlevel(const char *n)
 {
     log_level i;
-    for(i = 0; i < sizeof(log_strings)/sizeof(log_strings[0]); i++) {
+    for(i = (log_level) 0; i < sizeof(log_strings)/sizeof(log_strings[0]); i = (log_level) ((int) i + 1)) {
         if (case_insensitive_strncmp(log_strings[i], n, strlen(log_strings[i])) == 0) {
             return i;
         }
@@ -206,3 +240,5 @@ getLogLevel(const char *module, log_level logdefault)
     }
     return loglevel;
 }
+
+} // extern "C"
