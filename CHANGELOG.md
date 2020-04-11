@@ -3,7 +3,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 
-## [2.4.0-rc3] - 2020-02-24
+## [2.4.0] - 2020-03-11
 ### Added
 - Added a new Feature API (FAPI) implementation
 - Added Esys_TRSess_GetAuthRequired() ESAPI function
@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 - Changed tcti-device in non-async mode to allways block
 
 ### Fixed
+- Fixed hmac calculation for tpm2_clear command in ESAPI
 - Fixed mixing salted and unsalted sessions in the same ESAPI context
 - Removed use of VLAs from TPML marshal code
 - Fixed setting C++ compiler for non-fuzzing builds at configure
