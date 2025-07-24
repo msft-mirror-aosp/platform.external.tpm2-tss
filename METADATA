@@ -11,6 +11,9 @@ third_party {
   }
   version: "2.4.0"
   license_type: NOTICE
+  security {
+    tag: "NVD-CPE2.3:cpe:/a:tpm2_software_stack_project:tpm2_software_stack:2.4.0"
+  }
   last_upgrade_date {
     year: 2020
     month: 4
